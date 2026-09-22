@@ -21,7 +21,10 @@ app.add_middleware(
 
 app.include_router(optimizer_router, prefix="/api/v1", tags=["Portfolio Optimizer"])
 
-
+@app.get("/")
+def root():
+    return {"status": "healthy"}
+    
 @app.get("/health", tags=["Health"])
 def health_check():
     """Health check probe endpoint."""

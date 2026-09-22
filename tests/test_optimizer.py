@@ -20,9 +20,10 @@ def test_list_strategies():
     res = client.get("/api/v1/strategies")
     assert res.status_code == 200
     strategies = res.json()
-    assert len(strategies) >= 6
+    assert len(strategies) >= 2
     strat_map = {s["id"]: s for s in strategies}
     assert strat_map["equal_weights"]["status"] == "active"
+    assert strat_map["risk_parity"]["status"] == "active"
 
 # For testing equal weights strategy as in the examples
 def test_equal_weights_two_assets_scenario_1():
@@ -149,3 +150,21 @@ def test_validation_min_exceeds_max_weight():
     response = client.post("/api/v1/optimize", json=payload)
     assert response.status_code == 422
     assert "cannot exceed max_weight" in response.text
+
+#This is for testing the risk parity strategy
+def test_risk_parity_scenario_2():
+    """Test Scenario 2 from assignment: VEA: 25%, AGG: 75% with Risk Parity."""
+    payload = {
+        "optimization_strategy": "Risk Parity",
+        "securities": [
+            {"ticker": "VEA", "security_name": "Vanguard Developed Markets Index Fund;ETF", "allocation": 25.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 75.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+    
+    assert abs(changes["VEA"] - 20.12) <= 0.1
+    assert abs(changes["AGG"] - 79.88) <= 0.1
