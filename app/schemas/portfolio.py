@@ -38,6 +38,22 @@ class SecurityInput(BaseModel):
         return self
 
 
+class PortfolioConstraints(BaseModel):
+    """Optional portfolio-level constraints (e.g. Min Dividend Yield, Risk-Free Rate)."""
+    min_dividend_yield: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+        description="Minimum portfolio dividend yield in %"
+    )
+    risk_free_rate: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+        description="Annualized risk-free rate percentage (e.g. 1.57)"
+    )
+
+
 class OptimizationRequest(BaseModel):
     """Portfolio optimization request body."""
     optimization_strategy: str = Field(
@@ -48,6 +64,10 @@ class OptimizationRequest(BaseModel):
         ...,
         min_length=1,
         description="List of securities with current allocations and optional constraints"
+    )
+    constraints: Optional[PortfolioConstraints] = Field(
+        default=None,
+        description="Optional portfolio-level constraints"
     )
 
     @model_validator(mode="after")
