@@ -20,10 +20,11 @@ def test_list_strategies():
     res = client.get("/api/v1/strategies")
     assert res.status_code == 200
     strategies = res.json()
-    assert len(strategies) >= 2
+    assert len(strategies) >= 3
     strat_map = {s["id"]: s for s in strategies}
     assert strat_map["equal_weights"]["status"] == "active"
     assert strat_map["risk_parity"]["status"] == "active"
+    assert strat_map["minimize_drawdown"]["status"] == "active"
 
 # For testing equal weights strategy as in the examples
 def test_equal_weights_two_assets_scenario_1():
@@ -168,3 +169,47 @@ def test_risk_parity_scenario_2():
     
     assert abs(changes["VEA"] - 20.12) <= 0.1
     assert abs(changes["AGG"] - 79.88) <= 0.1
+
+
+# This is for testing the minimize drawdown strategy
+def test_minimize_drawdown_multi_asset():
+    """Verify minimize drawdown strategy generates valid weights summing to 100%."""
+    payload = {
+        "optimization_strategy": "Minimize Drawdown",
+        "securities": [
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 60.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 30.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 10.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = data["allocation_changes"]
+    assert len(changes) == 3
+
+    total_w = sum(c["optimized_weight"] for c in changes)
+    assert round(total_w, 2) == 100.0
+
+    # Low-drawdown assets like AGG should receive significant allocation
+    agg = next(c for c in changes if c["ticker"] == "AGG")
+    assert agg["optimized_weight"] > 40.0
+
+
+def test_minimize_drawdown_respects_constraints():
+    """Verify minimize drawdown strictly respects min_weight and max_weight bounds."""
+    payload = {
+        "optimization_strategy": "Minimize Drawdown",
+        "securities": [
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0, "min_weight": 20.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 50.0, "min_weight": 60.0, "max_weight": 80.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+
+    assert 20.0 <= changes["SPY"] <= 40.0
+    assert 60.0 <= changes["AGG"] <= 80.0
+    assert round(changes["SPY"] + changes["AGG"], 2) == 100.0
