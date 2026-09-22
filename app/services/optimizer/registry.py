@@ -6,6 +6,7 @@ from app.services.optimizer.strategies.equal_weight import EqualWeightsStrategy
 from app.services.optimizer.strategies.risk_parity import RiskParityStrategy
 from app.services.optimizer.strategies.minimize_drawdown import MinimizeDrawdownStrategy
 from app.services.optimizer.strategies.minimize_volatility import MinimizeVolatilityStrategy
+from app.services.optimizer.strategies.maximize_sharpe import MaximizeSharpeRatioStrategy
 
 
 class StrategyRegistry:
@@ -43,6 +44,19 @@ class StrategyRegistry:
         self.register(mdd_strategy, aliases=["minimize_drawdown", "minimize drawdown", "Minimize Drawdown", "min_drawdown"])
         mv_strategy = MinimizeVolatilityStrategy()
         self.register(mv_strategy, aliases=["minimize_volatility", "minimize volatility", "Minimize Volatility", "min_volatility"])
+        sr_strategy = MaximizeSharpeRatioStrategy()
+        self.register(
+            sr_strategy,
+            aliases=[
+                "maximize_sharpe_ratio",
+                "maximize sharpe ratio",
+                "Maximize Sharpe Ratio",
+                "maximize_sharpe",
+                "max_sharpe",
+                "sharpe_ratio",
+            ],
+        )
+
 
     def get_strategy(self, strategy_name: str) -> BaseOptimizerStrategy:
         """Retrieve strategy instance by name or alias."""

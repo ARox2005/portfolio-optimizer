@@ -20,12 +20,13 @@ def test_list_strategies():
     res = client.get("/api/v1/strategies")
     assert res.status_code == 200
     strategies = res.json()
-    assert len(strategies) >= 4
+    assert len(strategies) >= 5
     strat_map = {s["id"]: s for s in strategies}
     assert strat_map["equal_weights"]["status"] == "active"
     assert strat_map["risk_parity"]["status"] == "active"
     assert strat_map["minimize_drawdown"]["status"] == "active"
     assert strat_map["minimize_volatility"]["status"] == "active"
+    assert strat_map["maximize_sharpe_ratio"]["status"] == "active"
 
 # For testing equal weights strategy as in the examples
 def test_equal_weights_two_assets_scenario_1():
@@ -256,3 +257,33 @@ def test_minimize_volatility_respects_constraints():
     assert 20.0 <= changes["SPY"] <= 40.0
     assert 60.0 <= changes["AGG"] <= 80.0
     assert round(changes["SPY"] + changes["AGG"], 2) == 100.0
+
+
+# This is for testing the Maximize Sharpe Ratio strategy (Scenario 4: Unconstrained)
+def test_maximize_sharpe_scenario_4_unconstrained():
+    """Test Scenario 4: Maximize Sharpe Ratio with default historical Treasury Rf.
+    Matches Finominal reference platform: SPY: 69.40%, GLD: 30.60%, others 0.00%.
+    """
+    payload = {
+        "optimization_strategy": "Maximize Sharpe Ratio",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0},
+            {"ticker": "VEA", "security_name": "Vanguard Developed Markets Index Fund;ETF", "allocation": 20.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+
+    assert round(sum(changes.values()), 2) == 100.0
+    # With Rf = 0.02 (2.0%), SPY is 70.35% and GLD is 29.65%, within 1% to 1.5% of both Finominal benchmarks
+    assert abs(changes["SPY"] - 69.40) <= 1.5
+    assert abs(changes["GLD"] - 30.60) <= 1.5
+    assert changes["AGG"] == 0.0
+    assert changes["VEA"] == 0.0
+    assert changes["IEFA"] == 0.0
+
