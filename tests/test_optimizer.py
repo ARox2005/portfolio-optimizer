@@ -20,11 +20,12 @@ def test_list_strategies():
     res = client.get("/api/v1/strategies")
     assert res.status_code == 200
     strategies = res.json()
-    assert len(strategies) >= 3
+    assert len(strategies) >= 4
     strat_map = {s["id"]: s for s in strategies}
     assert strat_map["equal_weights"]["status"] == "active"
     assert strat_map["risk_parity"]["status"] == "active"
     assert strat_map["minimize_drawdown"]["status"] == "active"
+    assert strat_map["minimize_volatility"]["status"] == "active"
 
 # For testing equal weights strategy as in the examples
 def test_equal_weights_two_assets_scenario_1():
@@ -200,6 +201,48 @@ def test_minimize_drawdown_respects_constraints():
     """Verify minimize drawdown strictly respects min_weight and max_weight bounds."""
     payload = {
         "optimization_strategy": "Minimize Drawdown",
+        "securities": [
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0, "min_weight": 20.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 50.0, "min_weight": 60.0, "max_weight": 80.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+
+    assert 20.0 <= changes["SPY"] <= 40.0
+    assert 60.0 <= changes["AGG"] <= 80.0
+    assert round(changes["SPY"] + changes["AGG"], 2) == 100.0
+
+
+# This is for testing the minimize volatility strategy (Scenario 3)
+def test_minimize_volatility_scenario_3():
+    """Test Scenario 3 from assignment: SPY: 60%, AGG: 30%, GLD: 10% with Minimize Volatility."""
+    payload = {
+        "optimization_strategy": "Minimize Volatility",
+        "securities": [
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 60.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 30.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 10.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+
+    assert round(sum(changes.values()), 2) == 100.0
+    # Global minimum variance allocation strongly favors AGG with small SPY and GLD portions
+    assert abs(changes["AGG"] - 91.21) <= 0.5
+    assert abs(changes["SPY"] - 6.93) <= 0.5
+    assert abs(changes["GLD"] - 1.86) <= 0.5
+
+
+def test_minimize_volatility_respects_constraints():
+    """Verify minimize volatility strictly respects min_weight and max_weight bounds."""
+    payload = {
+        "optimization_strategy": "Minimize Volatility",
         "securities": [
             {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0, "min_weight": 20.0, "max_weight": 40.0},
             {"ticker": "AGG", "security_name": "AGG", "allocation": 50.0, "min_weight": 60.0, "max_weight": 80.0},
