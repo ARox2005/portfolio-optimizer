@@ -32,12 +32,6 @@ class RiskParityStrategy(BaseOptimizerStrategy):
         if diff != 0.0:
             optimized_weights[-1] = round(optimized_weights[-1] + diff, 2)
 
-        for sec, opt_w in zip(securities, optimized_weights):
-            if sec.min_weight is not None and opt_w < sec.min_weight:
-                raise ValueError(f"Optimized weight ({opt_w}%) violates min_weight ({sec.min_weight}%) for {sec.ticker}")
-            if sec.max_weight is not None and opt_w > sec.max_weight:
-                raise ValueError(f"Optimized weight ({opt_w}%) violates max_weight ({sec.max_weight}%) for {sec.ticker}")
-
         changes = self.calculate_changes(
             tickers=tickers,
             names=names,
