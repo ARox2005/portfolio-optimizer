@@ -60,3 +60,21 @@ def load_fund_return_matrix(tickers: List[str]) -> Tuple[np.ndarray, List[str]]:
 
     pivot_df = pivot_df[tickers_upper]
     return pivot_df.values, tickers_upper
+
+
+def load_fund_dividend_yields(tickers: List[str]) -> np.ndarray:
+    """Load dividend yields (as decimals) for requested tickers in order from Fund Info sheet."""
+    df = pd.read_excel(DATA_PATH, sheet_name="Fund Info")
+    tickers_upper = [t.strip().upper() for t in tickers]
+    df["ticker_upper"] = df["ticker"].astype(str).str.strip().str.upper()
+    df_filtered = df[df["ticker_upper"].isin(tickers_upper)].set_index("ticker_upper")
+
+    missing = set(tickers_upper) - set(df_filtered.index)
+    if missing:
+        raise ValueError(f"Tickers not found in Fund Info sheet: {', '.join(missing)}")
+
+    yields = []
+    for t in tickers_upper:
+        val = df_filtered.loc[t, "dividend_yield"]
+        yields.append(0.0 if pd.isna(val) else float(val))
+    return np.array(yields, dtype=float)

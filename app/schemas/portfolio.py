@@ -39,18 +39,12 @@ class SecurityInput(BaseModel):
 
 
 class PortfolioConstraints(BaseModel):
-    """Optional portfolio-level constraints (e.g. Min Dividend Yield, Risk-Free Rate)."""
+    """Optional portfolio-level constraints."""
     min_dividend_yield: Optional[float] = Field(
         default=None,
         ge=0.0,
         le=100.0,
-        description="Minimum portfolio dividend yield in %"
-    )
-    risk_free_rate: Optional[float] = Field(
-        default=None,
-        ge=0.0,
-        le=100.0,
-        description="Annualized risk-free rate percentage (e.g. 1.57)"
+        description="Minimum portfolio dividend yield percentage (e.g., 2.50 for 2.5%)",
     )
 
 
@@ -69,6 +63,7 @@ class OptimizationRequest(BaseModel):
         default=None,
         description="Optional portfolio-level constraints"
     )
+
 
     @model_validator(mode="after")
     def validate_allocations_and_uniqueness(self) -> "OptimizationRequest":
