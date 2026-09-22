@@ -287,3 +287,145 @@ def test_maximize_sharpe_scenario_4_unconstrained():
     assert changes["VEA"] == 0.0
     assert changes["IEFA"] == 0.0
 
+
+# Tests for optional Minimum Dividend Yield constraint across strategies
+
+def test_equal_weights_with_constraints_ignored():
+    """Verify that passing optional portfolio constraints does not alter Equal Weights."""
+    payload = {
+        "optimization_strategy": "Equal weights",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "IEFA", "allocation": 25.0},
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 75.0},
+        ],
+        "constraints": {
+            "min_dividend_yield": 2.50
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    changes = {c["ticker"]: c["optimized_weight"] for c in response.json()["allocation_changes"]}
+    assert changes["IEFA"] == 50.0
+    assert changes["SPY"] == 50.0
+
+
+def test_risk_parity_with_constraints_ignored():
+    """Verify that passing optional portfolio constraints does not alter Risk Parity."""
+    payload = {
+        "optimization_strategy": "Risk Parity",
+        "securities": [
+            {"ticker": "VEA", "security_name": "VEA", "allocation": 25.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 75.0},
+        ],
+        "constraints": {
+            "min_dividend_yield": 2.50
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    changes = {c["ticker"]: c["optimized_weight"] for c in response.json()["allocation_changes"]}
+    assert abs(changes["VEA"] - 20.12) <= 0.5
+    assert abs(changes["AGG"] - 79.88) <= 0.5
+
+
+def test_maximize_sharpe_scenario_5_constrained():
+    """Test Scenario 5: Maximize Sharpe with min_weight 5%, max_weight 40%, min_dividend_yield 2.50%."""
+    payload = {
+        "optimization_strategy": "Maximize Sharpe Ratio",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "IEFA", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "VEA", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+        "constraints": {
+            "min_dividend_yield": 2.50
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+
+    assert round(sum(changes.values()), 2) == 100.0
+    for ticker, weight in changes.items():
+        assert 5.0 <= weight <= 40.0
+
+    # AGG should be at max cap (40%) to satisfy the 2.5% dividend yield requirement
+    assert changes["AGG"] == 40.0
+    assert abs(changes["SPY"] - 36.24) <= 1.0
+    assert abs(changes["IEFA"] - 13.76) <= 1.0
+    assert changes["GLD"] == 5.0
+    assert changes["VEA"] == 5.0
+
+    # Check achieved dividend yield: AGG 3.974%, IEFA 3.278%, VEA 2.034%, SPY 0.987%, GLD 0%
+    achieved_yield = (
+        changes["AGG"] * 0.03974
+        + changes["IEFA"] * 0.03278
+        + changes["VEA"] * 0.02034
+        + changes["SPY"] * 0.00987
+        + changes["GLD"] * 0.0
+    )
+    assert achieved_yield >= 2.49  # >= 2.50% subject to penny rounding
+
+
+def test_minimize_volatility_with_dividend_yield():
+    """Verify Minimize Volatility respects min_dividend_yield constraint."""
+    payload = {
+        "optimization_strategy": "Minimize Volatility",
+        "securities": [
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 50.0},
+        ],
+        "constraints": {
+            "min_dividend_yield": 2.50
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    changes = {c["ticker"]: c["optimized_weight"] for c in response.json()["allocation_changes"]}
+    assert round(sum(changes.values()), 2) == 100.0
+    # AGG dividend yield is 3.97%, SPY is 0.99% -> requires AGG >= 50.5% to achieve 2.50%
+    achieved_yield = (changes["AGG"] * 0.03974 + changes["SPY"] * 0.00987)
+    assert achieved_yield >= 2.49
+
+
+def test_minimize_drawdown_with_dividend_yield():
+    """Verify Minimize Drawdown respects min_dividend_yield constraint."""
+    payload = {
+        "optimization_strategy": "Minimize Drawdown",
+        "securities": [
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 50.0},
+        ],
+        "constraints": {
+            "min_dividend_yield": 2.50
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    changes = {c["ticker"]: c["optimized_weight"] for c in response.json()["allocation_changes"]}
+    assert round(sum(changes.values()), 2) == 100.0
+    achieved_yield = (changes["AGG"] * 0.03974 + changes["SPY"] * 0.00987)
+    assert achieved_yield >= 2.49
+
+
+def test_infeasible_dividend_yield_returns_422():
+    """Verify that an unachievable dividend yield returns HTTP 422 error."""
+    payload = {
+        "optimization_strategy": "Maximize Sharpe Ratio",
+        "securities": [
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 50.0},
+        ],
+        "constraints": {
+            "min_dividend_yield": 10.0  # Impossible since SPY is ~0.99% and GLD is 0%
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 422
+    assert "infeasible" in response.json()["detail"].lower()
+
+
+

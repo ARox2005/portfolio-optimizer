@@ -1,12 +1,12 @@
 """Maximize Sharpe Ratio portfolio optimization strategy."""
 from typing import List, Tuple
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, linprog
 from app.schemas.portfolio import OptimizationRequest, OptimizationResponse
 from app.services.optimizer.base import BaseOptimizerStrategy
-from app.services.data_loader import load_fund_return_matrix
+from app.services.data_loader import load_fund_return_matrix, load_fund_dividend_yields
 
-# Historical 3-month US Treasury Bill rate benchmark (approx. 1.5% to 1.6%)
+# Historical 3-month US Treasury Bill rate benchmark (~2.0% balanced empirical calibration)
 DEFAULT_RISK_FREE_RATE = 0.02
 
 
@@ -34,9 +34,12 @@ class MaximizeSharpeRatioStrategy(BaseOptimizerStrategy):
 
         rf = DEFAULT_RISK_FREE_RATE
 
-        # 3. Setup security weight bounds
-        bounds = [(0.0, 1.0) for _ in securities]
-        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+        # 2. Setup security weight bounds
+        bounds: List[Tuple[float, float]] = []
+        for sec in securities:
+            lower = (sec.min_weight / 100.0) if sec.min_weight is not None else 0.0
+            upper = (sec.max_weight / 100.0) if sec.max_weight is not None else 1.0
+            bounds.append((lower, upper))
 
         # Check bounds sanity
         sum_lower = sum(b[0] for b in bounds)
@@ -50,10 +53,39 @@ class MaximizeSharpeRatioStrategy(BaseOptimizerStrategy):
                 f"Infeasible constraints: sum of maximum weights ({sum_upper * 100:.2f}%) is less than 100%."
             )
 
-        # 4. Formulate constraints
+        # 3. Formulate constraints
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
 
-        # 5. Objective: Minimize Negative Sharpe Ratio
+        # Optional Minimum Dividend Yield Constraint
+        div_yields = None
+        min_div = None
+        if request.constraints and request.constraints.min_dividend_yield is not None:
+            min_div = request.constraints.min_dividend_yield / 100.0
+            div_yields = load_fund_dividend_yields(tickers)
+
+            # Pre-check feasibility using linear programming
+            lp_res = linprog(
+                -div_yields,
+                A_eq=[[1.0] * n],
+                b_eq=[1.0],
+                bounds=bounds,
+                method="highs",
+            )
+            if lp_res.success:
+                max_achievable = -lp_res.fun
+                if max_achievable < min_div - 1e-6:
+                    raise ValueError(
+                        f"Infeasible constraint: required minimum dividend yield of {min_div * 100:.2f}% "
+                        f"cannot be met with current bounds (maximum achievable is {max_achievable * 100:.2f}%)."
+                    )
+            elif not lp_res.success:
+                raise ValueError("Infeasible constraints: given bounds and budget cannot be simultaneously satisfied.")
+
+            constraints.append(
+                {"type": "ineq", "fun": lambda w, dy=div_yields, md=min_div: float(np.dot(w, dy) - md)}
+            )
+
+        # 4. Objective: Minimize Negative Sharpe Ratio
         def neg_sharpe_objective(w: np.ndarray) -> float:
             port_ret = float(np.dot(w, mu))
             port_vol = float(np.sqrt(np.dot(w, np.dot(cov, w))))
@@ -61,16 +93,20 @@ class MaximizeSharpeRatioStrategy(BaseOptimizerStrategy):
                 return 0.0
             return -(port_ret - rf) / port_vol
 
-        # 6. Initial guess
+        # 5. Initial guess
         w0 = np.array([sec.allocation / 100.0 for sec in securities])
-        # If w0 violates bounds, project to center of bounds
         for i, (low, high) in enumerate(bounds):
             if w0[i] < low or w0[i] > high:
                 w0 = np.array([(b[0] + b[1]) / 2.0 for b in bounds])
                 w0 = w0 / np.sum(w0)
                 break
 
-        # 7. Optimize using SLSQP
+        # If dividend constraint is active and w0 doesn't satisfy it, use the LP feasible point
+        if min_div is not None and div_yields is not None and lp_res.success:
+            if np.dot(w0, div_yields) < min_div:
+                w0 = lp_res.x
+
+        # 6. Optimize using SLSQP
         result = minimize(
             neg_sharpe_objective,
             w0,
@@ -81,9 +117,8 @@ class MaximizeSharpeRatioStrategy(BaseOptimizerStrategy):
         )
 
         if not result.success:
-            # Fallback retry from equal weights
-            w0_fallback = np.array([1.0 / n] * n)
-            w0_fallback = np.clip(w0_fallback, [b[0] for b in bounds], [b[1] for b in bounds])
+            # Fallback retry from center of bounds
+            w0_fallback = np.array([(b[0] + b[1]) / 2.0 for b in bounds])
             w0_fallback = w0_fallback / np.sum(w0_fallback)
             result = minimize(
                 neg_sharpe_objective,
@@ -99,7 +134,15 @@ class MaximizeSharpeRatioStrategy(BaseOptimizerStrategy):
                     f"Maximize Sharpe Ratio optimization failed or constraints are infeasible: {result.message}"
                 )
 
-        # 9. Clean up and round weights
+        # 7. Post-validation: ensure dividend constraint is satisfied if present
+        if min_div is not None and div_yields is not None:
+            achieved_yield = float(np.dot(result.x, div_yields))
+            if achieved_yield < (min_div - 1e-4):
+                raise ValueError(
+                    f"Optimization could not satisfy minimum dividend yield constraint of {min_div * 100:.2f}%."
+                )
+
+        # 8. Clean up and round weights
         scaled_weights = (result.x / np.sum(result.x)) * 100.0
         # Zero out negligible numerical residual allocations
         scaled_weights = np.where(scaled_weights < 0.005, 0.0, scaled_weights)
@@ -110,11 +153,10 @@ class MaximizeSharpeRatioStrategy(BaseOptimizerStrategy):
         # Reconcile rounding differences to enforce exact 100.00% sum
         diff = round(100.0 - sum(optimized_weights), 2)
         if diff != 0.0:
-            # Adjust the largest weight to absorb penny rounding
             max_idx = int(np.argmax(optimized_weights))
             optimized_weights[max_idx] = round(optimized_weights[max_idx] + diff, 2)
 
-        # 10. Format and return response
+        # 9. Format and return response
         changes = self.calculate_changes(
             tickers=tickers,
             names=names,
