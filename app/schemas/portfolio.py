@@ -1,5 +1,5 @@
 """Pydantic schemas for portfolio optimization requests and responses."""
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field, model_validator
 from app.core.config import ALLOCATION_SUM_TOLERANCE
 
@@ -38,14 +38,47 @@ class SecurityInput(BaseModel):
         return self
 
 
+class FactorConstraints(BaseModel):
+    """Optional factor-level objectives (e.g. maximize, minimize)."""
+    momentum: Optional[Literal["maximize", "minimize"]] = Field(
+        default=None,
+        description="Target exposure direction for Momentum factor"
+    )
+    value: Optional[Literal["maximize", "minimize"]] = Field(
+        default=None,
+        description="Target exposure direction for Value factor"
+    )
+    size: Optional[Literal["maximize", "minimize"]] = Field(
+        default=None,
+        description="Target exposure direction for Size factor"
+    )
+
+
 class PortfolioConstraints(BaseModel):
-    """Optional portfolio-level constraints."""
+    """Optional portfolio-level constraints and factor objectives."""
     min_dividend_yield: Optional[float] = Field(
         default=None,
         ge=0.0,
         le=100.0,
         description="Minimum portfolio dividend yield percentage (e.g., 2.50 for 2.5%)",
     )
+    momentum: Optional[Literal["maximize", "minimize"]] = Field(
+        default=None,
+        description="Target exposure direction for Momentum factor"
+    )
+    value: Optional[Literal["maximize", "minimize"]] = Field(
+        default=None,
+        description="Target exposure direction for Value factor"
+    )
+    size: Optional[Literal["maximize", "minimize"]] = Field(
+        default=None,
+        description="Target exposure direction for Size factor"
+    )
+    factors: Optional[FactorConstraints] = Field(
+        default=None,
+        description="Optional nested factor objectives"
+    )
+
 
 
 class OptimizationRequest(BaseModel):
@@ -91,10 +124,27 @@ class AllocationChange(BaseModel):
     change: float = Field(..., description="Percentage point delta (optimized_weight - current_weight)")
 
 
+class FactorBetaValues(BaseModel):
+    """Systematic equity risk factor exposures (betas)."""
+    value: float = Field(..., description="Value factor beta")
+    momentum: float = Field(..., description="Momentum factor beta")
+    size: float = Field(..., description="Size factor beta")
+
+
+class PortfolioFactorBetas(BaseModel):
+    """Factor betas for current and optimized portfolios."""
+    current_portfolio: FactorBetaValues = Field(..., description="Factor betas of the current (input) portfolio")
+    optimized_portfolio: FactorBetaValues = Field(..., description="Factor betas of the optimized portfolio")
+
+
 class OptimizationResponse(BaseModel):
     """Output returned by the portfolio optimizer."""
     optimization_strategy: str = Field(..., description="Strategy applied")
     allocation_changes: List[AllocationChange] = Field(..., description="Security-level weight changes")
+    factor_betas: Optional[PortfolioFactorBetas] = Field(
+        default=None,
+        description="Factor betas for both current and optimized portfolios"
+    )
 
 
 class StrategyInfo(BaseModel):

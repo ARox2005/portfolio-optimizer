@@ -20,13 +20,14 @@ def test_list_strategies():
     res = client.get("/api/v1/strategies")
     assert res.status_code == 200
     strategies = res.json()
-    assert len(strategies) >= 5
+    assert len(strategies) >= 6
     strat_map = {s["id"]: s for s in strategies}
     assert strat_map["equal_weights"]["status"] == "active"
     assert strat_map["risk_parity"]["status"] == "active"
     assert strat_map["minimize_drawdown"]["status"] == "active"
     assert strat_map["minimize_volatility"]["status"] == "active"
     assert strat_map["maximize_sharpe_ratio"]["status"] == "active"
+    assert strat_map["optimize_factor_exposure"]["status"] == "active"
 
 # For testing equal weights strategy as in the examples
 def test_equal_weights_two_assets_scenario_1():
@@ -156,7 +157,6 @@ def test_validation_min_exceeds_max_weight():
 
 #This is for testing the risk parity strategy
 def test_risk_parity_scenario_2():
-    """Test Scenario 2 from assignment: VEA: 25%, AGG: 75% with Risk Parity."""
     payload = {
         "optimization_strategy": "Risk Parity",
         "securities": [
@@ -426,6 +426,559 @@ def test_infeasible_dividend_yield_returns_422():
     response = client.post("/api/v1/optimize", json=payload)
     assert response.status_code == 422
     assert "infeasible" in response.json()["detail"].lower()
+
+
+def test_optimize_factor_exposure_scenario_6_maximize_momentum():
+    """Test Scenario 6: Optimize Factor Exposure maximizing Momentum exposure."""
+    payload = {
+        "optimization_strategy": "Optimize Factor Exposure",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Trust", "allocation": 20.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0},
+            {"ticker": "SPY", "security_name": "SPDR S&P 500 ETF Trust", "allocation": 20.0},
+        ],
+        "constraints": {
+            "momentum": "maximize"
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["optimization_strategy"] == "Optimize Factor Exposure"
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+
+    assert round(sum(changes.values()), 2) == 100.0
+    # VEA has highest momentum beta (0.187) among the 5 assets, so unconstrained it receives 100%
+    assert changes["VEA"] == 100.0
+    assert changes["SPY"] == 0.0
+    assert changes["IEFA"] == 0.0
+    assert changes["GLD"] == 0.0
+    assert changes["AGG"] == 0.0
+
+
+def test_optimize_factor_exposure_momentum_with_bounds_and_dividend():
+    """Test Scenario 6 with security min/max bounds and minimum dividend yield constraint."""
+    payload = {
+        "optimization_strategy": "Optimize Factor Exposure",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "IEFA", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "VEA", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+        "constraints": {
+            "momentum": "maximize",
+            "min_dividend_yield": 2.50
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c["optimized_weight"] for c in data["allocation_changes"]}
+
+    # Verify budget and bounds
+    assert round(sum(changes.values()), 2) == 100.0
+    for ticker, weight in changes.items():
+        assert 5.0 <= weight <= 40.0
+
+    # Highest momentum & dividend combination (VEA and IEFA) at max weight 40%
+    assert changes["VEA"] == 40.0
+    assert changes["IEFA"] == 40.0
+    assert changes["GLD"] == 5.0
+
+    # Verify achieved dividend yield is >= 2.50%
+    achieved_yield = (
+        changes["AGG"] * 0.0344
+        + changes["IEFA"] * 0.0312
+        + changes["VEA"] * 0.0291
+        + changes["SPY"] * 0.0125
+        + changes["GLD"] * 0.0
+    )
+    assert achieved_yield >= 2.49
+
+
+def test_optimize_factor_exposure_nested_factors_schema():
+    """Verify that constraints under nested 'factors' key work identically."""
+    payload = {
+        "optimization_strategy": "Optimize Factor Exposure",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "IEFA", "allocation": 20.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 20.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 20.0},
+            {"ticker": "VEA", "security_name": "VEA", "allocation": 20.0},
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 20.0},
+        ],
+        "constraints": {
+            "factors": {
+                "momentum": "maximize"
+            }
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    changes = {c["ticker"]: c["optimized_weight"] for c in response.json()["allocation_changes"]}
+    assert changes["VEA"] == 100.0
+
+
+def test_optimize_factor_exposure_value_and_size():
+    """Verify multi-factor optimization targeting value maximization and size minimization."""
+    payload = {
+        "optimization_strategy": "optimize_factor_exposure",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "IEFA", "allocation": 20.0, "min_weight": 10.0, "max_weight": 50.0},
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 20.0, "min_weight": 10.0, "max_weight": 50.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 20.0, "min_weight": 10.0, "max_weight": 50.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 20.0, "min_weight": 10.0, "max_weight": 50.0},
+            {"ticker": "VEA", "security_name": "VEA", "allocation": 20.0, "min_weight": 10.0, "max_weight": 50.0},
+        ],
+        "constraints": {
+            "value": "maximize",
+            "size": "minimize"
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    changes = {c["ticker"]: c["optimized_weight"] for c in response.json()["allocation_changes"]}
+    assert round(sum(changes.values()), 2) == 100.0
+    for w in changes.values():
+        assert 10.0 <= w <= 50.0
+
+
+def test_optimize_factor_exposure_infeasible_dividend():
+    """Verify that an unachievable dividend yield raises HTTP 422."""
+    payload = {
+        "optimization_strategy": "Optimize Factor Exposure",
+        "securities": [
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 50.0},
+        ],
+        "constraints": {
+            "momentum": "maximize",
+            "min_dividend_yield": 10.0
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 422
+    assert "infeasible" in response.json()["detail"].lower()
+
+
+def test_optimize_factor_exposure_infeasible_bounds():
+    """Verify that conflicting security bounds (sum(min_weight) > 100%) raise HTTP 422."""
+    payload = {
+        "optimization_strategy": "Optimize Factor Exposure",
+        "securities": [
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 50.0, "min_weight": 60.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 50.0, "min_weight": 60.0},
+        ],
+        "constraints": {
+            "momentum": "maximize"
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 422
+    assert "infeasible" in response.json()["detail"].lower()
+
+@pytest.mark.parametrize(
+    "strategy_name",
+    [
+        "Equal weights",
+        "Risk Parity",
+        "Minimize Volatility",
+        "Minimize Drawdown",
+        "Maximize Sharpe Ratio",
+        "Optimize Factor Exposure",
+    ]
+)
+def test_factor_betas_returned_for_all_strategies(strategy_name):
+    """Verify that factor_betas are included in the response across all strategies."""
+    payload = {
+        "optimization_strategy": strategy_name,
+        "securities": [
+            {"ticker": "IEFA", "security_name": "IEFA", "allocation": 25.0},
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 75.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    assert "factor_betas" in data
+    factor_betas = data["factor_betas"]
+    assert factor_betas is not None
+
+    for portfolio_key in ["current_portfolio", "optimized_portfolio"]:
+        assert portfolio_key in factor_betas
+        betas = factor_betas[portfolio_key]
+        assert "value" in betas and isinstance(betas["value"], float)
+        assert "momentum" in betas and isinstance(betas["momentum"], float)
+        assert "size" in betas and isinstance(betas["size"], float)
+
+
+def test_factor_betas_scenario_6_momentum_increase():
+    payload = {
+        "optimization_strategy": "Optimize Factor Exposure",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "IEFA", "allocation": 20.0},
+            {"ticker": "GLD", "security_name": "GLD", "allocation": 20.0},
+            {"ticker": "AGG", "security_name": "AGG", "allocation": 20.0},
+            {"ticker": "VEA", "security_name": "VEA", "allocation": 20.0},
+            {"ticker": "SPY", "security_name": "SPY", "allocation": 20.0},
+        ],
+        "constraints": {
+            "momentum": "maximize"
+        }
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    factor_betas = response.json()["factor_betas"]
+    curr_mom = factor_betas["current_portfolio"]["momentum"]
+    opt_mom = factor_betas["optimized_portfolio"]["momentum"]
+
+    assert opt_mom > curr_mom
+    assert curr_mom == 0.13
+    assert opt_mom == 0.19
+
+
+def test_equal_weighted_five_assets_with_bounds():
+    payload = {
+        "optimization_strategy": "Equal weights",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    for ticker in ["IEFA", "GLD", "AGG", "VEA", "SPY"]:
+        assert changes[ticker]["current_weight"] == 20.0
+        assert changes[ticker]["optimized_weight"] == 20.0
+        assert changes[ticker]["change"] == 0.0
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == opt_betas["value"]
+    assert curr_betas["momentum"] == opt_betas["momentum"]
+    assert curr_betas["size"] == opt_betas["size"]
+
+
+def test_risk_parity_five_assets_with_bounds():
+    payload = {
+        "optimization_strategy": "Risk Parity",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["IEFA"]["optimized_weight"] - 13.60) <= 0.25
+    assert abs(changes["GLD"]["optimized_weight"] - 13.62) <= 0.25
+    assert abs(changes["AGG"]["optimized_weight"] - 45.84) <= 0.25
+    assert abs(changes["VEA"]["optimized_weight"] - 13.47) <= 0.25
+    assert abs(changes["SPY"]["optimized_weight"] - 13.47) <= 0.25
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.10
+    assert opt_betas["momentum"] == 0.09
+    assert opt_betas["size"] == -0.04
+
+    assert opt_betas["value"] < curr_betas["value"]
+    assert opt_betas["momentum"] < curr_betas["momentum"]
+
+
+def test_minimize_drawdown_five_assets_with_bounds():
+    payload = {
+        "optimization_strategy": "Minimize Drawdown",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["IEFA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["GLD"]["optimized_weight"] - 40.0) <= 0.1
+    assert abs(changes["AGG"]["optimized_weight"] - 40.0) <= 0.1
+    assert abs(changes["VEA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["SPY"]["optimized_weight"] - 10.0) <= 0.1
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.03
+    assert opt_betas["momentum"] == 0.09
+    assert opt_betas["size"] == -0.01
+
+    assert opt_betas["value"] < curr_betas["value"]
+    assert opt_betas["momentum"] < curr_betas["momentum"]
+
+
+def test_minimize_drawdown_with_min_dividend_yield_constraint():
+    payload = {
+        "optimization_strategy": "Minimize Drawdown",
+        "constraints": {"min_dividend_yield": 2.5},
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["AGG"]["optimized_weight"] - 40.0) <= 0.1
+    assert abs(changes["VEA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["SPY"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["IEFA"]["optimized_weight"] - 20.86) <= 2.5
+    assert abs(changes["GLD"]["optimized_weight"] - 29.14) <= 2.5
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.08
+    assert opt_betas["momentum"] == 0.09
+    assert opt_betas["size"] == -0.02
+
+    assert opt_betas["value"] < curr_betas["value"]
+    assert opt_betas["momentum"] < curr_betas["momentum"]
+
+
+def test_minimize_volatility_five_assets_with_bounds():
+    payload = {
+        "optimization_strategy": "Minimize Volatility",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["IEFA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["GLD"]["optimized_weight"] - 28.09) <= 0.25
+    assert abs(changes["AGG"]["optimized_weight"] - 40.0) <= 0.1
+    assert abs(changes["VEA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["SPY"]["optimized_weight"] - 21.91) <= 0.25
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.05
+    assert opt_betas["momentum"] == 0.09
+    assert opt_betas["size"] == -0.04
+
+    assert opt_betas["value"] < curr_betas["value"]
+    assert opt_betas["momentum"] < curr_betas["momentum"]
+
+
+def test_minimize_volatility_with_min_dividend_yield_constraint():
+    payload = {
+        "optimization_strategy": "Minimize Volatility",
+        "constraints": {"min_dividend_yield": 2.5},
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["AGG"]["optimized_weight"] - 40.0) <= 0.1
+    assert abs(changes["VEA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["GLD"]["optimized_weight"] - 25.06) <= 1.0
+    assert abs(changes["IEFA"]["optimized_weight"] - 19.13) <= 3.2
+    assert abs(changes["SPY"]["optimized_weight"] - 10.81) <= 2.5
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.08
+    assert opt_betas["momentum"] == 0.09
+    assert opt_betas["size"] == -0.03
+
+    assert opt_betas["value"] < curr_betas["value"]
+    assert opt_betas["momentum"] < curr_betas["momentum"]
+
+
+def test_maximize_sharpe_ratio_five_assets_with_bounds():
+    payload = {
+        "optimization_strategy": "Maximize Sharpe Ratio",
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["IEFA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["VEA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["SPY"]["optimized_weight"] - 40.0) <= 0.1
+    assert abs(changes["GLD"]["optimized_weight"] - 28.84) <= 0.8
+    assert abs(changes["AGG"]["optimized_weight"] - 21.16) <= 0.8
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.10
+    assert opt_betas["momentum"] == 0.13
+    assert opt_betas["size"] == -0.08
+
+    assert opt_betas["value"] < curr_betas["value"]
+    assert opt_betas["momentum"] == curr_betas["momentum"]
+
+
+def test_maximize_sharpe_ratio_with_min_dividend_yield_constraint():
+    payload = {
+        "optimization_strategy": "Maximize Sharpe Ratio",
+        "constraints": {"min_dividend_yield": 2.5},
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["GLD"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["AGG"]["optimized_weight"] - 40.0) <= 0.1
+    assert abs(changes["VEA"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["IEFA"]["optimized_weight"] - 10.64) <= 3.5
+    assert abs(changes["SPY"]["optimized_weight"] - 39.36) <= 3.5
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.12
+    assert opt_betas["momentum"] == 0.10
+    assert opt_betas["size"] == -0.09
+
+    assert opt_betas["value"] < curr_betas["value"]
+    assert opt_betas["momentum"] < curr_betas["momentum"]
+
+
+def test_optimize_factor_exposure_maximize_momentum_with_bounds():
+    payload = {
+        "optimization_strategy": "Optimize Factor Exposure",
+        "constraints": {"momentum": "maximize"},
+        "securities": [
+            {"ticker": "IEFA", "security_name": "iShares Core MSCI EAFE ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "GLD", "security_name": "SPDR Gold Shares", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "AGG", "security_name": "iShares Core US Aggregate Bond ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "VEA", "security_name": "Vanguard FTSE Developed Markets ETF", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+            {"ticker": "SPY", "security_name": "State Street SPDR S&P 500 ETF Trust", "allocation": 20.0, "min_weight": 5.0, "max_weight": 40.0},
+        ],
+    }
+    response = client.post("/api/v1/optimize", json=payload)
+    assert response.status_code == 200
+    data = response.json()
+    changes = {c["ticker"]: c for c in data["allocation_changes"]}
+
+    assert abs(changes["IEFA"]["optimized_weight"] - 10.0) <= 0.1
+    assert abs(changes["AGG"]["optimized_weight"] - 5.0) <= 0.1
+    assert abs(changes["VEA"]["optimized_weight"] - 40.0) <= 0.1
+    assert changes["SPY"]["optimized_weight"] in [5.0, 40.0]
+    assert changes["GLD"]["optimized_weight"] in [5.0, 40.0]
+
+    assert "factor_betas" in data and data["factor_betas"] is not None
+    curr_betas = data["factor_betas"]["current_portfolio"]
+    opt_betas = data["factor_betas"]["optimized_portfolio"]
+
+    assert curr_betas["value"] == 0.17
+    assert curr_betas["momentum"] == 0.13
+    assert curr_betas["size"] == -0.06
+
+    assert opt_betas["value"] == 0.25
+    assert opt_betas["momentum"] == 0.17
+    assert opt_betas["size"] == -0.11
+
+    assert opt_betas["momentum"] > curr_betas["momentum"]
+
+
+
 
 
 

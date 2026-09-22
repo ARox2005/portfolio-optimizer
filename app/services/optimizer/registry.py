@@ -7,6 +7,7 @@ from app.services.optimizer.strategies.risk_parity import RiskParityStrategy
 from app.services.optimizer.strategies.minimize_drawdown import MinimizeDrawdownStrategy
 from app.services.optimizer.strategies.minimize_volatility import MinimizeVolatilityStrategy
 from app.services.optimizer.strategies.maximize_sharpe import MaximizeSharpeRatioStrategy
+from app.services.optimizer.strategies.optimize_factor_exposure import OptimizeFactorExposureStrategy
 
 
 class StrategyRegistry:
@@ -54,6 +55,18 @@ class StrategyRegistry:
                 "maximize_sharpe",
                 "max_sharpe",
                 "sharpe_ratio",
+            ],
+        )
+        fe_strategy = OptimizeFactorExposureStrategy()
+        self.register(
+            fe_strategy,
+            aliases=[
+                "optimize_factor_exposure",
+                "optimize factor exposure",
+                "Optimize Factor Exposure",
+                "factor_exposure",
+                "factor exposure",
+                "optimize_factors",
             ],
         )
 

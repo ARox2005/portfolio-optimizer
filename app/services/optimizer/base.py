@@ -1,7 +1,14 @@
 """Base abstraction for portfolio optimization strategies."""
 from abc import ABC, abstractmethod
-from typing import List
-from app.schemas.portfolio import OptimizationRequest, OptimizationResponse, AllocationChange
+from typing import List, Optional
+from app.schemas.portfolio import (
+    OptimizationRequest,
+    OptimizationResponse,
+    AllocationChange,
+    PortfolioFactorBetas,
+    FactorBetaValues,
+)
+from app.services.data_loader import calculate_portfolio_factor_betas
 
 
 class BaseOptimizerStrategy(ABC):
@@ -62,3 +69,28 @@ class BaseOptimizerStrategy(ABC):
                 )
             )
         return changes
+
+    @staticmethod
+    def calculate_factor_betas(
+        tickers: List[str],
+        current_weights: List[float],
+        optimized_weights: List[float],
+    ) -> Optional[PortfolioFactorBetas]:
+        """Compute systematic factor betas for current and optimized portfolios.
+
+        Args:
+            tickers: List of security tickers.
+            current_weights: List of original weights in %.
+            optimized_weights: List of optimized weights in %.
+
+        Returns:
+            PortfolioFactorBetas object or None if factor data unavailable.
+        """
+        raw_betas = calculate_portfolio_factor_betas(tickers, current_weights, optimized_weights)
+        if raw_betas is None:
+            return None
+        return PortfolioFactorBetas(
+            current_portfolio=FactorBetaValues(**raw_betas["current_portfolio"]),
+            optimized_portfolio=FactorBetaValues(**raw_betas["optimized_portfolio"]),
+        )
+
