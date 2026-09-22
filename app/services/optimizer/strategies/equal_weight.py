@@ -53,13 +53,14 @@ class EqualWeightsStrategy(BaseOptimizerStrategy):
             optimized_weights=optimized_weights
         )
 
+        factor_betas = self.calculate_factor_betas(
+            tickers=tickers,
+            current_weights=current_weights,
+            optimized_weights=optimized_weights,
+        )
+
         return OptimizationResponse(
             optimization_strategy=self.strategy_name,
             allocation_changes=changes,
-            metadata={
-                "strategy_id": self.strategy_id,
-                "asset_count": n,
-                "formula": "w = 100 / N %",
-                "total_optimized_weight": round(sum(optimized_weights), 2)
-            }
+            factor_betas=factor_betas,
         )

@@ -164,7 +164,14 @@ class MaximizeSharpeRatioStrategy(BaseOptimizerStrategy):
             optimized_weights=optimized_weights,
         )
 
+        factor_betas = self.calculate_factor_betas(
+            tickers=tickers,
+            current_weights=current_weights,
+            optimized_weights=optimized_weights,
+        )
+
         return OptimizationResponse(
             optimization_strategy=self.strategy_name,
             allocation_changes=changes,
+            factor_betas=factor_betas,
         )
