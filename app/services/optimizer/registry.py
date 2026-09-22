@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 from app.schemas.portfolio import StrategyInfo
 from app.services.optimizer.base import BaseOptimizerStrategy
 from app.services.optimizer.strategies.equal_weight import EqualWeightsStrategy
+from app.services.optimizer.strategies.risk_parity import RiskParityStrategy
 
 
 class StrategyRegistry:
@@ -34,7 +35,8 @@ class StrategyRegistry:
         """Register initial and roadmap strategies."""
         eq_strategy = EqualWeightsStrategy()
         self.register(eq_strategy, aliases=["equal_weights", "equal weights", "equal-weights", "equal_weight", "equalweight"])
-
+        rp_strategy = RiskParityStrategy()
+        self.register(rp_strategy, aliases=["risk_parity", "risk parity", "Risk Parity"])
 
     def get_strategy(self, strategy_name: str) -> BaseOptimizerStrategy:
         """Retrieve strategy instance by name or alias."""
@@ -50,8 +52,17 @@ class StrategyRegistry:
             f"Available strategies: {', '.join(supported)}."
         )
 
-    def list_strategies(self) -> List[str]:
-        return [s.strategy_name for s in self._strategies.values()]
+    def list_strategies(self) -> List[StrategyInfo]:
+        return [
+            StrategyInfo(
+                id=s.strategy_id,
+                name=s.strategy_name,
+                description=s.description,
+                status="active",
+            )
+            for s in self._strategies.values()
+        ]
+
 
 
 optimizer_registry = StrategyRegistry()
